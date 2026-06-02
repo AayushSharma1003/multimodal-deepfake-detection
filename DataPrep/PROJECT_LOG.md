@@ -5,7 +5,7 @@
 **Institution:** Bennett University  
 **Target:** Conference paper (short-form, code + results)  
 **Started:** May 2026  
-**Last Updated:** 31 May 2026
+**Last Updated:** 02 June 2026
 
 ---
 
@@ -76,7 +76,7 @@ EXPLAINABILITY (post-training, inference-time only):
 | After EfficientNet-B0 | (B, 16, 1280) | Per-frame features |
 | After video projection | (B, 16, 256) | + positional encoding |
 | After video transformer | (B, 16, 256) | Self-attended visual features |
-| Raw audio input | (B, 1, 128, T) | Log mel-spectrogram |
+| Raw audio input | (B, 1, 128, 94) | Log mel-spectrogram (T=94 confirmed) |
 | After VGGish | (B, T', 128) | Per-segment features |
 | After audio projection | (B, T', 256) | + positional encoding |
 | After audio transformer | (B, T', 256) | Self-attended audio features |
@@ -147,18 +147,19 @@ EXPLAINABILITY (post-training, inference-time only):
 
 - Purpose-built for audio-visual deepfake detection
 - Videos with manipulated audio, video, or both
-- ~25.6 GB total, available on HuggingFace (ControlNet/LAV-DF)
-- NO separate audio files — audio embedded in .mp4, extract with torchaudio
+- ~25.6 GB total (as .tar), available on HuggingFace (ControlNet/LAV-DF) — gated dataset, requires HuggingFace login and access approval
+- NO separate audio files — audio embedded in .mp4, extracted with ffmpeg subprocess
 
 ### 4.2 Directory Structure
 
 ```
-LAV-DF/
-├── metadata.json          ← ALL labels and metadata
-├── metadata.min.json
-├── train/                 ← numbered .mp4 files (e.g., 000001.mp4)
-├── dev/                   ← validation split (NOT called "val")
-└── test/                  ← test split
+LAV-DF/LAV-DF/LAV-DF/          ← NOTE: triple nesting after HuggingFace download + tar extraction
+├── metadata.json               ← ALL labels and metadata (131.2 MB)
+├── metadata.min.json           ← minified version (32.3 MB)
+├── README.md
+├── train/                      ← 78,703 .mp4 files
+├── dev/                        ← 31,501 .mp4 files (validation split, NOT called "val")
+└── test/                       ← 26,100 .mp4 files
 ```
 
 ### 4.3 metadata.json Fields
@@ -188,16 +189,27 @@ LAV-DF/
 | False | True | 2 (Fake-Audio) | 1 (Fake) |
 | True | True | 3 (Fake-Both) | 1 (Fake) |
 
-### 4.5 Class Distribution
-
-*To be filled after running explore_dataset.py*
+### 4.5 Class Distribution (Full Dataset — 136,304 total)
 
 | Split | Real | Fake-Video | Fake-Audio | Fake-Both | Total |
 |-------|------|------------|------------|-----------|-------|
-| Train | | | | | |
-| Dev | | | | | |
-| Test | | | | | |
-| **Total** | | | | | |
+| Train | 21,254 (27.0%) | 19,271 (24.5%) | 19,088 (24.3%) | 19,090 (24.3%) | 78,703 |
+| Dev | 8,271 (26.3%) | 7,820 (24.8%) | 7,709 (24.5%) | 7,701 (24.4%) | 31,501 |
+| Test | 6,906 (26.5%) | 6,452 (24.7%) | 6,373 (24.4%) | 6,369 (24.4%) | 26,100 |
+| **Total** | **36,431 (26.7%)** | **33,543 (24.6%)** | **33,170 (24.3%)** | **33,160 (24.3%)** | **136,304** |
+
+**Observation:** Near-perfectly balanced 4-class dataset. Binary split is 26.7% Real / 73.3% Fake (expected: 3 fake types vs 1 real type). Will use weighted CrossEntropyLoss or balanced accuracy to handle binary imbalance.
+
+### 4.6 Sampled Dataset (5,000 total, stratified)
+
+| Split | Real | Fake-Video | Fake-Audio | Fake-Both | Total |
+|-------|------|------------|------------|-----------|-------|
+| Train | 780 (27.0%) | 707 (24.5%) | 700 (24.2%) | 700 (24.2%) | 2,887 |
+| Dev | 303 (26.2%) | 287 (24.8%) | 283 (24.5%) | 282 (24.4%) | 1,155 |
+| Test | 253 (26.4%) | 237 (24.7%) | 234 (24.4%) | 234 (24.4%) | 958 |
+| **Total** | **1,336 (26.7%)** | **1,231 (24.6%)** | **1,217 (24.3%)** | **1,216 (24.3%)** | **5,000** |
+
+Average duration: 8.60 seconds. Total duration of full dataset: 325.5 hours.
 
 ---
 
@@ -209,7 +221,7 @@ LAV-DF/
 For each sampled .mp4:
   1. Load video with OpenCV
   2. Uniformly sample 16 frames
-  3. MTCNN face detection + crop + align
+  3. MTCNN face detection + crop + align (GPU-accelerated)
      - Fallback 1: nearest good bounding box if frame fails
      - Fallback 2: center-crop if ALL frames fail
   4. Resize to 224×224
@@ -217,27 +229,41 @@ For each sampled .mp4:
   6. Save as float16 .pt → shape (16, 3, 224, 224)
 ```
 
+**Actual results (02 June 2026):**
+- Processed: 5,000 / 5,000 (0 failures)
+- Time: 12.4 min on RTX A6000 (6.7 videos/sec)
+- Tensor shape: (16, 3, 224, 224) confirmed
+- File size per tensor: 4.59 MB
+- Total disk: 22.4 GB
+
 ### 5.2 Audio Preprocessing
 
 ```
 For each sampled .mp4:
-  1. Extract audio with torchaudio.load()
-  2. Convert to mono
-  3. Resample to 16 kHz
+  1. Extract audio from .mp4 using ffmpeg subprocess (NOT torchaudio.load — no backends on Windows)
+  2. Convert to mono, resample to 16 kHz (done by ffmpeg)
+  3. Load wav with soundfile
   4. Pad or center-crop to 3 seconds (48000 samples)
   5. Compute mel-spectrogram (n_mels=128, n_fft=1024, hop=512)
   6. Log scaling: log(mel + 1e-9)
-  7. Save as float16 .pt → shape (1, 128, T)
+  7. Save as float16 .pt → shape (1, 128, 94)
 ```
 
-### 5.3 Disk Estimates (5K videos, float16)
+**Actual results (02 June 2026):**
+- Processed: 5,000 / 5,000 (0 failures)
+- Time: 15.6 min (5.35 videos/sec)
+- Tensor shape: (1, 128, 94) confirmed — T=94 time steps for 3-sec audio
+- File size per tensor: 24.7 KB
+- Total disk: ~120 MB
 
-| Component | Estimated Size |
-|-----------|---------------|
-| Video tensors | ~22 GB |
-| Audio tensors | ~0.25 GB |
-| Raw dataset | ~25.6 GB |
-| **Total** | **~48 GB** |
+### 5.3 Actual Disk Usage (5K videos, float16)
+
+| Component | Estimated | Actual |
+|-----------|-----------|--------|
+| Video tensors | ~22 GB | 22.4 GB |
+| Audio tensors | ~0.25 GB | ~0.12 GB |
+| Raw dataset (.tar + extracted) | ~25.6 GB | ~51 GB (tar not deleted yet) |
+| **Total** | **~48 GB** | **~74 GB (can reclaim ~25 GB by deleting .tar)** |
 
 ---
 
@@ -255,9 +281,10 @@ For each sampled .mp4:
 | Epochs | 20–30 |
 | Checkpoint criterion | Best validation AUC |
 | Dropout | 0.1 |
+| Binary class weights | [3.0, 1.0] (upweight Real to handle 27/73 imbalance) |
 
 ### Evaluation Metrics
-- Balanced accuracy
+- Balanced accuracy (primary — handles class imbalance)
 - Precision / Recall / F1 (per class)
 - AUC-ROC
 - Confusion matrix
@@ -307,8 +334,9 @@ For each sampled .mp4:
 - **GPU:** NVIDIA RTX A6000 (48 GB VRAM)
 - **CUDA:** 13.1 (driver 591.59)
 - **User:** Komal-Sch
-- **Access:** AnyDesk v6.x (keyboard issues with v9 mismatch)
-- **Conda env:** `dfd` (Python 3.11)
+- **Access:** AnyDesk v6.x from Mac (keyboard issues with v9 mismatch — use on-screen keyboard workaround)
+- **Conda env:** `dfd` (Python 3.11.9)
+- **GitHub repo cloned:** Yes, at `C:\Users\Komal-Sch\Desktop\deepfake_detection\`
 
 ### 8.2 MacBook (Secondary — Code writing, planning)
 - **Machine:** MacBook M2 Pro
@@ -336,6 +364,8 @@ matplotlib==3.9.2
 tqdm==4.66.5
 ipykernel==6.29.5
 huggingface_hub==0.24.6
+soundfile (added 02 June — needed for audio loading on Windows)
+ffmpeg (conda-forge — needed for audio extraction from mp4)
 ```
 
 ---
@@ -352,20 +382,20 @@ huggingface_hub==0.24.6
 | Conda env setup (MacBook) | ✅ Done | May 2026 | |
 | Code files written (DataPrep) | ✅ Done | 31 May 2026 | 9 files + setup.bat |
 | Lab machine access (AnyDesk) | ✅ Done | 31 May 2026 | RTX A6000 confirmed |
-| Lab machine env setup | ❌ Pending | | Run setup.bat |
-| LAV-DF download on lab machine | ❌ Pending | | download_dataset.py |
-| Dataset exploration | ❌ Pending | | explore_dataset.py |
-| Stratified sampling (5K) | ❌ Pending | | sample_dataset.py |
-| Audio preprocessing | ❌ Pending | | ~15-30 min |
-| Video preprocessing | ❌ Pending | | ~1-3 hrs |
-| Metadata CSV build | ❌ Pending | | build_metadata.py |
-| Dataset verification | ❌ Pending | | dataset.py |
+| Lab machine env setup | ✅ Done | 02 June 2026 | setup.bat + manual Miniconda install |
+| LAV-DF download on lab machine | ✅ Done | 02 June 2026 | 48 min download, required tar extraction |
+| Dataset exploration | ✅ Done | 02 June 2026 | 136,304 videos, near-balanced 4-class |
+| Stratified sampling (5K) | ✅ Done | 02 June 2026 | 5,000 videos, proportions maintained |
+| Audio preprocessing | ✅ Done | 02 June 2026 | 5,000/5,000, 0 failures, 15.6 min |
+| Video preprocessing | ✅ Done | 02 June 2026 | 5,000/5,000, 0 failures, 12.4 min |
+| Metadata CSV build | ✅ Done | 02 June 2026 | 5,000 entries, all matched |
+| Dataset verification | ✅ Done | 02 June 2026 | ALL CHECKS PASSED |
 
 ### Phase 2: Model & Training
 
 | Task | Status | Date | Notes |
 |------|--------|------|-------|
-| model.py (full architecture) | ❌ Pending | | |
+| model.py (full architecture) | ❌ Pending | | Next up |
 | train.py (training loop) | ❌ Pending | | |
 | evaluate.py (metrics + viz) | ❌ Pending | | |
 | Binary classification training | ❌ Pending | | |
@@ -386,14 +416,20 @@ huggingface_hub==0.24.6
 
 ## 10. Key Findings
 
-*To be filled as experiments produce results.*
-
 ### 10.1 Dataset Observations
-- *Pending explore_dataset.py results*
+- LAV-DF is near-perfectly balanced for 4-class: each class ~24-27%
+- Binary split is 26.7% Real / 73.3% Fake — natural consequence of 3 fake types, not a dataset flaw
+- Average video duration: 8.60 seconds, total: 325.5 hours
+- All 136,304 videos verified present on disk
 
 ### 10.2 Preprocessing Observations
 - Full dataset preprocessing (136K videos) exceeded 400 GB on MacBook — switched to 5K stratified sample
-- Lab machine has RTX A6000 (48 GB VRAM), sufficient for larger batches
+- Lab machine RTX A6000 (48 GB VRAM) processed 5K videos in 12.4 min — A6000 is dramatically faster than estimated 1-3 hours
+- MTCNN face detection ran at 6.7 videos/sec on A6000 with zero failures
+- Audio preprocessing: T=94 time steps for 3-second audio at hop_length=512
+- torchaudio had zero audio backends on Windows — fixed by switching to ffmpeg subprocess + soundfile
+- float16 storage confirmed working: tensors auto-cast to float32 at DataLoader time
+- Audio file size is negligible (24.7 KB each) vs video (4.59 MB each)
 
 ### 10.3 Training Results
 - *Pending*
@@ -411,10 +447,14 @@ huggingface_hub==0.24.6
 | 2 | May 2026 | facenet-pytorch version pin conflicts | Install with --no-deps | ✅ Resolved |
 | 3 | May 2026 | numpy 2.x incompatibility | Pin numpy==1.26.4 | ✅ Resolved |
 | 4 | 31 May | Full preprocessing fills 400 GB disk | Stratified sample 5K + float16 storage | ✅ Resolved |
-| 5 | 31 May | AnyDesk v9 keyboard broken (sends Win key) | Downgraded to AnyDesk v6.6.0 on Mac | ⚠️ Partial (clipboard workaround) |
-| 6 | 31 May | AnyDesk v6↔v9 version mismatch | Using clipboard paste for typing | ⚠️ Workaround |
-| 7 | 31 May | Lab machine has no Python/Conda | setup.bat auto-downloads Miniconda | ✅ Resolved |
+| 5 | 31 May | AnyDesk v9 keyboard broken (sends Win key) | Downgraded to AnyDesk v6.6.0 on Mac; use on-screen keyboard, toggle Win key off | ✅ Resolved |
+| 6 | 31 May | AnyDesk v6↔v9 version mismatch causes stuck Win key | Toggle Win key on Windows on-screen keyboard to release it | ✅ Resolved |
+| 7 | 31 May | Lab machine has no Python/Conda | setup.bat auto-installs; manual Miniconda download when auto-download failed | ✅ Resolved |
 | 8 | 31 May | TeamViewer LAN mode blocked remote access | Didn't work; sticking with AnyDesk | ❌ Abandoned |
+| 9 | 02 June | HuggingFace 401 — LAV-DF is gated dataset | huggingface-cli login with access token | ✅ Resolved |
+| 10 | 02 June | Dataset downloaded as .tar, not extracted | python tarfile.extractall() — created triple-nested LAV-DF/LAV-DF/LAV-DF path | ✅ Resolved |
+| 11 | 02 June | DATASET_ROOT path wrong after tar extraction | Updated config.py to add extra "LAV-DF" nesting | ✅ Resolved |
+| 12 | 02 June | torchaudio.list_audio_backends() returns [] on Windows | Replaced torchaudio.load() with ffmpeg subprocess + soundfile; added soundfile to deps | ✅ Resolved |
 
 ---
 
@@ -426,7 +466,20 @@ huggingface_hub==0.24.6
 - VS Code already installed on lab machine
 - Python/Conda NOT installed — setup.bat will handle
 - All DataPrep code files written and ready to transfer
-- Next: Komal ma'am runs setup.bat, then preprocessing scripts in order
+- Decided to use 5K stratified sample instead of full 136K dataset (storage constraint)
+- TeamViewer attempted but failed (LAN mode); sticking with AnyDesk
+
+### 02 June 2026 — Full Preprocessing Run
+- Ran entire preprocessing pipeline on lab machine via AnyDesk
+- setup.bat: Miniconda auto-download failed (network), installed manually. Env creation and package install succeeded. All pinned versions verified.
+- download_dataset.py: 25.6 GB downloaded in 48 min. Required tar extraction and config.py path fix (triple-nested folder).
+- explore_dataset.py: 136,304 videos confirmed, near-balanced 4-class distribution.
+- sample_dataset.py: 5,000 videos sampled, stratified across splits and classes.
+- preprocess_audio.py: Initially failed — torchaudio had zero backends on Windows. Fixed by switching to ffmpeg subprocess + soundfile. After fix: 5,000/5,000 processed, 0 failures, 15.6 min.
+- preprocess_video.py: 5,000/5,000 processed, 0 failures, 12.4 min on A6000 (6.7 videos/sec). Way faster than estimated 1-3 hours.
+- build_metadata.py: 5,000 entries, all video+audio tensor pairs matched.
+- dataset.py: ALL CHECKS PASSED. DataLoader verified for both binary and 4-class labels.
+- **Phase 1 is 100% complete. Ready for model.py and train.py.**
 
 ---
 
