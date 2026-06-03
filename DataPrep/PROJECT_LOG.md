@@ -5,7 +5,7 @@
 **Institution:** Bennett University  
 **Target:** Conference paper (short-form, code + results)  
 **Started:** May 2026  
-**Last Updated:** 02 June 2026
+**Last Updated:** 03 June 2026
 
 ---
 
@@ -66,6 +66,8 @@ EXPLAINABILITY (post-training, inference-time only):
   → Grad-CAM++ on EfficientNet-B0 (visual saliency heatmaps on face regions)
   → Grad-CAM++ on VGGish (audio saliency on mel-spectrogram time-frequency regions)
   → Cross-modal attention weight visualization (which audio-video pairs the model linked)
+  → GradientSHAP (per-pixel attribution with Shapley-value guarantees, via captum)
+  → Modality occlusion study (zero out one branch, measure performance drop)
 ```
 
 ### 2.2 Tensor Shapes Through the Pipeline
@@ -76,7 +78,7 @@ EXPLAINABILITY (post-training, inference-time only):
 | After EfficientNet-B0 | (B, 16, 1280) | Per-frame features |
 | After video projection | (B, 16, 256) | + positional encoding |
 | After video transformer | (B, 16, 256) | Self-attended visual features |
-| Raw audio input | (B, 1, 128, 94) | Log mel-spectrogram (T=94 confirmed) |
+| Raw audio input | (B, 1, 128, 101) | Log mel-spectrogram (T=101 with center=True padding) |
 | After VGGish | (B, T', 128) | Per-segment features |
 | After audio projection | (B, T', 256) | + positional encoding |
 | After audio transformer | (B, T', 256) | Self-attended audio features |
@@ -137,7 +139,7 @@ EXPLAINABILITY (post-training, inference-time only):
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Sample size | 5,000 / 136K | Full dataset preprocessing exceeded 400 GB disk; 5K is sufficient for conference paper with pretrained encoders; stratified to maintain class/split proportions |
+| Sample size | 20,000 / 136K | Originally 5K; scaled to 20K on 03 June for research rigour (~958 test samples per class). Balanced 4-class (25% each). Fits within 500 GB disk budget. |
 
 ---
 
@@ -200,7 +202,7 @@ LAV-DF/LAV-DF/LAV-DF/          ← NOTE: triple nesting after HuggingFace downlo
 
 **Observation:** Near-perfectly balanced 4-class dataset. Binary split is 26.7% Real / 73.3% Fake (expected: 3 fake types vs 1 real type). Will use weighted CrossEntropyLoss or balanced accuracy to handle binary imbalance.
 
-### 4.6 Sampled Dataset (5,000 total, stratified)
+### 4.6 Sampled Dataset — v1 (5,000 total, DEPRECATED)
 
 | Split | Real | Fake-Video | Fake-Audio | Fake-Both | Total |
 |-------|------|------------|------------|-----------|-------|
@@ -208,6 +210,21 @@ LAV-DF/LAV-DF/LAV-DF/          ← NOTE: triple nesting after HuggingFace downlo
 | Dev | 303 (26.2%) | 287 (24.8%) | 283 (24.5%) | 282 (24.4%) | 1,155 |
 | Test | 253 (26.4%) | 237 (24.7%) | 234 (24.4%) | 234 (24.4%) | 958 |
 | **Total** | **1,336 (26.7%)** | **1,231 (24.6%)** | **1,217 (24.3%)** | **1,216 (24.3%)** | **5,000** |
+
+**Status:** Deleted on 03 June 2026. Replaced by 20K sample for research rigour.
+
+### 4.7 Sampled Dataset — v2 (20,000 total, ACTIVE)
+
+Resampled for research rigour: 20K gives ~958 test samples per class (vs ~240 in 5K), enabling robust per-class metrics and bootstrap significance testing.
+
+| Split | Real | Fake-Video | Fake-Audio | Fake-Both | Total |
+|-------|------|------------|------------|-----------|-------|
+| Train | 2,887 | 2,887 | 2,887 | 2,887 | 11,548 |
+| Dev | 1,156 | 1,156 | 1,155 | 1,155 | 4,622 |
+| Test | 958 | 958 | 957 | 957 | 3,830 |
+| **Total** | **5,001 (25.0%)** | **5,001 (25.0%)** | **4,999 (25.0%)** | **4,999 (25.0%)** | **20,000** |
+
+**Key differences from v1:** Perfectly balanced 4-class distribution (25% each, not proportional to original). This is intentional — balanced classes eliminate the need for class weighting and simplify evaluation.
 
 Average duration: 8.60 seconds. Total duration of full dataset: 325.5 hours.
 
@@ -222,72 +239,74 @@ For each sampled .mp4:
   1. Load video with OpenCV
   2. Uniformly sample 16 frames
   3. MTCNN face detection + crop + align (GPU-accelerated)
-     - Fallback 1: nearest good bounding box if frame fails
-     - Fallback 2: center-crop if ALL frames fail
+     - Fallback: center-crop if face detection fails
   4. Resize to 224×224
   5. Normalize with ImageNet mean/std
   6. Save as float16 .pt → shape (16, 3, 224, 224)
 ```
 
-**Actual results (02 June 2026):**
-- Processed: 5,000 / 5,000 (0 failures)
-- Time: 12.4 min on RTX A6000 (6.7 videos/sec)
-- Tensor shape: (16, 3, 224, 224) confirmed
-- File size per tensor: 4.59 MB
-- Total disk: 22.4 GB
+**5K run (02 June 2026):** 5,000/5,000, 0 failures, 12.4 min (6.7 vids/sec)
+**20K run (03 June 2026):** 20,000/20,000, 0 failures, 4h37m (1.2 vids/sec — includes audio processing in same loop)
 
 ### 5.2 Audio Preprocessing
 
 ```
 For each sampled .mp4:
-  1. Extract audio from .mp4 using ffmpeg subprocess (NOT torchaudio.load — no backends on Windows)
-  2. Convert to mono, resample to 16 kHz (done by ffmpeg)
+  1. Extract audio from .mp4 using ffmpeg subprocess
+  2. Convert to mono, resample to 16 kHz
   3. Load wav with soundfile
-  4. Pad or center-crop to 3 seconds (48000 samples)
-  5. Compute mel-spectrogram (n_mels=128, n_fft=1024, hop=512)
+  4. Take first 1 second (16,000 samples), zero-pad if shorter
+  5. Compute mel-spectrogram (n_mels=128, n_fft=1024, hop=160, center=True)
   6. Log scaling: log(mel + 1e-9)
-  7. Save as float16 .pt → shape (1, 128, 94)
+  7. Save as float16 .pt → shape (1, 128, 101)
 ```
 
-**Actual results (02 June 2026):**
-- Processed: 5,000 / 5,000 (0 failures)
-- Time: 15.6 min (5.35 videos/sec)
-- Tensor shape: (1, 128, 94) confirmed — T=94 time steps for 3-sec audio
-- File size per tensor: 24.7 KB
-- Total disk: ~120 MB
+**5K run (02 June 2026):** shape (1, 128, 94) — used hop=512, 3-sec audio
+**20K run (03 June 2026):** shape (1, 128, 101) — used hop=160, 1-sec audio, center=True padding gives 101 frames
 
-### 5.3 Actual Disk Usage (5K videos, float16)
+### 5.3 Actual Disk Usage
 
-| Component | Estimated | Actual |
-|-----------|-----------|--------|
-| Video tensors | ~22 GB | 22.4 GB |
-| Audio tensors | ~0.25 GB | ~0.12 GB |
-| Raw dataset (.tar + extracted) | ~25.6 GB | ~51 GB (tar not deleted yet) |
-| **Total** | **~48 GB** | **~74 GB (can reclaim ~25 GB by deleting .tar)** |
+| Component | 5K (v1, deleted) | 20K (v2, active) |
+|-----------|------------------|-------------------|
+| Video tensors | 22.4 GB | ~92 GB |
+| Audio tensors | ~0.12 GB | ~0.5 GB |
+| Metadata + JSON | <1 MB | <1 MB |
+| **Total preprocessed** | **~22.5 GB** | **~92.5 GB** |
+| Raw dataset (extracted, tar deleted) | ~47.6 GB | ~47.6 GB |
+| **Total on Desktop** | — | **~140 GB / 500 GB budget** |
 
 ---
 
 ## 6. Training Plan
 
-| Hyperparameter | Value |
-|----------------|-------|
-| Optimizer | AdamW |
-| LR (pretrained backbones) | 1e-5 |
-| LR (new layers) | 1e-4 |
-| Scheduler | Cosine annealing |
-| Weight decay | 1e-2 |
-| Mixed precision | torch.cuda.amp |
-| Batch size | 8–16 (can go to 32 on A6000) |
-| Epochs | 20–30 |
-| Checkpoint criterion | Best validation AUC |
-| Dropout | 0.1 |
-| Binary class weights | [3.0, 1.0] (upweight Real to handle 27/73 imbalance) |
+| Hyperparameter | Value | Notes |
+|----------------|-------|-------|
+| Optimizer | AdamW | |
+| LR (pretrained backbones) | 2e-5 | Scaled for batch_size=16 (linear scaling rule) |
+| LR (new layers) | 2e-4 | Scaled for batch_size=16 |
+| Scheduler | Linear warmup (5%) + cosine annealing | Warmup prevents early transformer instability |
+| Weight decay | 1e-2 | |
+| Mixed precision | torch.cuda.amp (GradScaler) | |
+| Batch size | 16 | A6000 48 GB VRAM |
+| Epochs | 25 (max) | Early stopping patience = 7 |
+| Checkpoint criterion | Best validation AUC | |
+| Dropout | 0.1 | |
+| Gradient clipping | max_norm = 1.0 | |
+| Seeds | 7, 42, 123 | 3 seeds for statistical validity |
+| 4-class weights | [1.0, 1.0, 1.0, 1.0] | Balanced dataset, uniform weights |
 
 ### Evaluation Metrics
-- Balanced accuracy (primary — handles class imbalance)
-- Precision / Recall / F1 (per class)
-- AUC-ROC
-- Confusion matrix
+- Balanced accuracy (primary — handles any residual class imbalance)
+- Per-class Precision / Recall / F1
+- Macro-averaged AUC-ROC (one-vs-rest)
+- Confusion matrix (4×4)
+- Expected Calibration Error (ECE)
+- Computational cost (training time, inference throughput)
+
+### Statistical Methodology
+- All experiments run with 3 seeds → report mean ± std
+- Paired bootstrap test (N=10,000) for significance claims between configurations
+- 95% confidence intervals
 
 ---
 
@@ -295,34 +314,88 @@ For each sampled .mp4:
 
 ### 7.1 Core Experiments
 
-| # | Experiment | Status |
-|---|-----------|--------|
-| E1 | Binary classification (Real vs Fake) | ❌ Pending |
-| E2 | 4-class classification | ❌ Pending |
-| E3 | Cross-dataset generalization (train LAV-DF, test FakeAVCeleb) | ❌ Pending |
+| # | Experiment | Runs | Status |
+|---|-----------|------|--------|
+| E1 | 4-class classification on LAV-DF (20K) | 3 seeds | ❌ Pending |
+| E2 | Cross-dataset generalization: train LAV-DF → test DFDC (binary) | 3 seeds | ❌ Future |
 
-### 7.2 Planned Ablations
+**Note:** Binary LAV-DF classification dropped — 4-class is more informative and subsumes binary (collapse 3 fake classes for binary metrics). DFDC evaluation will collapse 4-class → binary at inference time (no retraining).
 
-| # | Ablation | Purpose |
-|---|---------|---------|
-| A1 | Transformer depth: 1, 2, 3, 4 layers | Find optimal depth for short sequences |
-| A2 | Cross-modal vs simple concatenation fusion | Justify cross-attention novelty |
-| A3 | Bidirectional vs unidirectional cross-attention | Justify both directions |
-| A4 | Video-only vs Audio-only vs Multimodal | Show multimodal benefit |
-| A5 | With vs without Grad-CAM++ explainability | Qualitative comparison |
+### 7.2 Ablation Study 1: Transformer Depth (12 runs)
 
-### 7.3 Results Table Template
+Vary per-branch transformer encoder layers AND cross-modal layers together.
 
-| Model Variant | Accuracy | Bal. Acc | AUC | Precision | Recall | F1 |
-|--------------|----------|----------|-----|-----------|--------|-----|
-| Full model (proposed) | | | | | | |
-| Video-only | | | | | | |
-| Audio-only | | | | | | |
-| Concat fusion (no cross-attn) | | | | | | |
-| Unidirectional cross-attn | | | | | | |
-| 1 encoder layer | | | | | | |
-| 3 encoder layers | | | | | | |
-| 4 encoder layers | | | | | | |
+| Config | Encoder layers | Cross-modal layers | Seeds | Purpose |
+|--------|---------------|-------------------|-------|---------|
+| D1 | 1 | 1 | 7, 42, 123 | Minimum viable depth |
+| D2 | 2 | 2 | 7, 42, 123 | Default/moderate |
+| D3 | 3 | 3 | 7, 42, 123 | Deeper |
+| D4 | 4 | 4 | 7, 42, 123 | Diminishing returns? |
+
+### 7.3 Ablation Study 2: Fusion Strategy (12 runs)
+
+Uses best depth from Study 1. Tests whether cross-modal attention is necessary.
+
+| Config | Mode | Description | Seeds |
+|--------|------|-------------|-------|
+| F1 | video_only | Video branch only, no audio | 7, 42, 123 |
+| F2 | audio_only | Audio branch only, no video | 7, 42, 123 |
+| F3 | concat | Both branches, concatenate (no cross-attention) | 7, 42, 123 |
+| F4 | cross_modal | Both branches + bidirectional cross-attention (ours) | 7, 42, 123 |
+
+### 7.4 Modality Occlusion Study (no training, evaluation only)
+
+Run on best model from 7.3. Same weights, different inputs:
+
+| Condition | Video input | Audio input | Purpose |
+|-----------|-----------|-------------|---------|
+| Full model | Real | Real | Baseline |
+| Audio only | Zeros | Real | Quantify audio contribution |
+| Video only | Real | Zeros | Quantify video contribution |
+
+### 7.5 Explainability Analysis (no training, evaluation only)
+
+| Method | What it shows | Output |
+|--------|--------------|--------|
+| Grad-CAM++ (video) | Where on face the model attends | Frame heatmaps |
+| Grad-CAM++ (audio) | Where in spectrogram the model attends | Spectrogram heatmaps |
+| Cross-modal attention weights | Which video-audio pairs are linked | Attention matrices |
+| GradientSHAP | Per-pixel attribution with Shapley guarantees | Attribution maps |
+
+### 7.6 Results Table Template
+
+| Model Variant | Bal. Acc (mean±std) | AUC (mean±std) | Per-class F1 | ECE |
+|--------------|---------------------|----------------|-------------|-----|
+| **Depth ablation** | | | | |
+| 1 layer | | | | |
+| 2 layers | | | | |
+| 3 layers | | | | |
+| 4 layers | | | | |
+| **Fusion ablation** | | | | |
+| Video-only | | | | |
+| Audio-only | | | | |
+| Concat fusion | | | | |
+| Cross-modal (ours) | | | | |
+| **Modality occlusion** | | | | |
+| Full model | | | | |
+| Video zeroed | | | | |
+| Audio zeroed | | | | |
+
+### 7.7 Paper Figures Plan
+
+| # | Figure | Type | Source |
+|---|--------|------|--------|
+| F1 | Architecture diagram | Schematic | Manual/tikz |
+| F2 | Train/val loss curves (depth ablation) | 4 subplots, mean±std | plot_results.py |
+| F3 | Depth ablation comparison | Bar chart (bacc + AUC) with error bars | plot_results.py |
+| F4 | Fusion ablation comparison | Bar chart (bacc + AUC) with error bars | plot_results.py |
+| F5 | Confusion matrix (best model) | 4×4 heatmap | plot_results.py |
+| F6 | Per-class F1 comparison | Grouped bar chart | plot_results.py |
+| F7 | Modality occlusion results | Bar chart | plot_results.py |
+| F8 | Grad-CAM++ video examples | Face heatmaps (3–4 samples) | run_experiments.py |
+| F9 | Grad-CAM++ audio examples | Spectrogram heatmaps (3–4 samples) | run_experiments.py |
+| F10 | Cross-modal attention maps | Attention matrices | run_experiments.py |
+| F11 | GradientSHAP attributions | Attribution overlays | run_experiments.py |
 
 ---
 
@@ -366,6 +439,7 @@ ipykernel==6.29.5
 huggingface_hub==0.24.6
 soundfile (added 02 June — needed for audio loading on Windows)
 ffmpeg (conda-forge — needed for audio extraction from mp4)
+captum (needed for GradientSHAP explainability — install before evaluation)
 ```
 
 ---
@@ -386,29 +460,36 @@ ffmpeg (conda-forge — needed for audio extraction from mp4)
 | LAV-DF download on lab machine | ✅ Done | 02 June 2026 | 48 min download, required tar extraction |
 | Dataset exploration | ✅ Done | 02 June 2026 | 136,304 videos, near-balanced 4-class |
 | Stratified sampling (5K) | ✅ Done | 02 June 2026 | 5,000 videos, proportions maintained |
-| Audio preprocessing | ✅ Done | 02 June 2026 | 5,000/5,000, 0 failures, 15.6 min |
-| Video preprocessing | ✅ Done | 02 June 2026 | 5,000/5,000, 0 failures, 12.4 min |
-| Metadata CSV build | ✅ Done | 02 June 2026 | 5,000 entries, all matched |
-| Dataset verification | ✅ Done | 02 June 2026 | ALL CHECKS PASSED |
+| Audio preprocessing (5K) | ✅ Done | 02 June 2026 | 5,000/5,000, 0 failures, 15.6 min |
+| Video preprocessing (5K) | ✅ Done | 02 June 2026 | 5,000/5,000, 0 failures, 12.4 min |
+| Metadata CSV build (5K) | ✅ Done | 02 June 2026 | 5,000 entries, all matched |
+| Dataset verification (5K) | ✅ Done | 02 June 2026 | ALL CHECKS PASSED |
+| **Resampling to 20K** | ✅ Done | 03 June 2026 | Balanced 4-class (25% each), 3 seeds planned |
+| **20K preprocessing** | ✅ Done | 03 June 2026 | 20,000/20,000, 0 failures, 4h37m |
+| **20K verification** | ✅ Done | 03 June 2026 | All tensors verified, metadata CSV clean |
+| **Old 5K data deleted** | ✅ Done | 03 June 2026 | Freed ~22.5 GB |
+| **Tar archive deleted** | ✅ Done | 03 June 2026 | Freed ~24 GB |
 
-### Phase 2: Model & Training
+### Phase 2: Model Training & Experiments
 
 | Task | Status | Date | Notes |
 |------|--------|------|-------|
-| model.py (full architecture) | ❌ Pending | | Next up |
-| train.py (training loop) | ❌ Pending | | |
-| evaluate.py (metrics + viz) | ❌ Pending | | |
-| Binary classification training | ❌ Pending | | |
-| 4-class classification training | ❌ Pending | | |
-| Ablation experiments | ❌ Pending | | |
-| Grad-CAM++ visualization | ❌ Pending | | |
+| config.py updated (20K, 4-class) | 🔄 In progress | 03 June 2026 | |
+| dataset.py updated (20K paths) | ❌ Pending | | |
+| model.py (configurable architecture) | ❌ Pending | | Configurable depth + fusion mode |
+| run_experiments.py (train + eval + ablations) | ❌ Pending | | Single file: training, testing, evaluation |
+| Depth ablation (4 configs × 3 seeds) | ❌ Pending | | 12 runs, ~42 hours estimated |
+| Fusion ablation (4 configs × 3 seeds) | ❌ Pending | | 12 runs, ~42 hours estimated |
+| Modality occlusion study | ❌ Pending | | Evaluation only, no training |
+| Grad-CAM++ + GradientSHAP | ❌ Pending | | Qualitative explainability |
+| analysis.py (plots + bootstrap) | ❌ Pending | | All paper figures + significance tests |
 
 ### Phase 3: Paper
 
 | Task | Status | Date | Notes |
 |------|--------|------|-------|
 | Results tables | ❌ Pending | | |
-| Figures (architecture, Grad-CAM) | ❌ Pending | | |
+| Figures (11 planned) | ❌ Pending | | See Section 7.7 |
 | Paper draft | ❌ Pending | | |
 | Venue selection | ❌ Pending | | |
 
@@ -423,13 +504,15 @@ ffmpeg (conda-forge — needed for audio extraction from mp4)
 - All 136,304 videos verified present on disk
 
 ### 10.2 Preprocessing Observations
-- Full dataset preprocessing (136K videos) exceeded 400 GB on MacBook — switched to 5K stratified sample
-- Lab machine RTX A6000 (48 GB VRAM) processed 5K videos in 12.4 min — A6000 is dramatically faster than estimated 1-3 hours
-- MTCNN face detection ran at 6.7 videos/sec on A6000 with zero failures
-- Audio preprocessing: T=94 time steps for 3-second audio at hop_length=512
+- Full dataset preprocessing (136K videos) exceeded 400 GB on MacBook — switched to stratified sample
+- 5K sample: Lab machine RTX A6000 processed 5K videos in 12.4 min (6.7 videos/sec)
+- 20K sample: 20,000/20,000 in 4h37m (1.2 it/s combined video+audio), zero failures
+- Audio tensor shape changed between runs: (1,128,94) at hop=512/3sec → (1,128,101) at hop=160/1sec with center=True
+- MTCNN face detection ran at 6.7 videos/sec on A6000 with zero failures across both 5K and 20K
 - torchaudio had zero audio backends on Windows — fixed by switching to ffmpeg subprocess + soundfile
+- torchaudio.transforms.MelSpectrogram works fine (no backend needed for transforms, only for I/O)
 - float16 storage confirmed working: tensors auto-cast to float32 at DataLoader time
-- Audio file size is negligible (24.7 KB each) vs video (4.59 MB each)
+- Disk usage scales linearly: 5K=22.5GB, 20K=92.5GB (as expected)
 
 ### 10.3 Training Results
 - *Pending*
@@ -455,6 +538,10 @@ ffmpeg (conda-forge — needed for audio extraction from mp4)
 | 10 | 02 June | Dataset downloaded as .tar, not extracted | python tarfile.extractall() — created triple-nested LAV-DF/LAV-DF/LAV-DF path | ✅ Resolved |
 | 11 | 02 June | DATASET_ROOT path wrong after tar extraction | Updated config.py to add extra "LAV-DF" nesting | ✅ Resolved |
 | 12 | 02 June | torchaudio.list_audio_backends() returns [] on Windows | Replaced torchaudio.load() with ffmpeg subprocess + soundfile; added soundfile to deps | ✅ Resolved |
+| 13 | 03 June | 5K test set too small for per-class statistical claims (~240/class) | Resampled to 20K (958/class in test set) | ✅ Resolved |
+| 14 | 03 June | Tar archive at wrong nesting level (LAV-DF.tar at LAV-DF/LAV-DF/) | Found with recursive search, deleted to free 24 GB | ✅ Resolved |
+| 15 | 03 June | Audio tensor shape (1,128,101) differs from 5K run (1,128,94) | Different params: 20K uses hop=160/1sec/center=True vs 5K hop=512/3sec. Model handles dynamically. | ✅ Noted |
+| 16 | 03 June | Git push rejected from Mac (remote ahead) | Uploaded via GitHub web UI instead | ✅ Resolved |
 
 ---
 
@@ -469,7 +556,7 @@ ffmpeg (conda-forge — needed for audio extraction from mp4)
 - Decided to use 5K stratified sample instead of full 136K dataset (storage constraint)
 - TeamViewer attempted but failed (LAN mode); sticking with AnyDesk
 
-### 02 June 2026 — Full Preprocessing Run
+### 02 June 2026 — Full Preprocessing Run (5K)
 - Ran entire preprocessing pipeline on lab machine via AnyDesk
 - setup.bat: Miniconda auto-download failed (network), installed manually. Env creation and package install succeeded. All pinned versions verified.
 - download_dataset.py: 25.6 GB downloaded in 48 min. Required tar extraction and config.py path fix (triple-nested folder).
@@ -481,6 +568,34 @@ ffmpeg (conda-forge — needed for audio extraction from mp4)
 - dataset.py: ALL CHECKS PASSED. DataLoader verified for both binary and 4-class labels.
 - **Phase 1 is 100% complete. Ready for model.py and train.py.**
 
+### 03 June 2026 — 20K Resampling + Research Design
+
+**Decisions made:**
+- Scaled from 5K → 20K samples for research rigour (958 test samples/class vs 240)
+- Switched to 4-class prediction on LAV-DF (binary on DFDC planned for future)
+- Balanced 4-class sampling (25% each) instead of proportional
+- Added 3-seed training (7, 42, 123) for statistical validity
+- Added paired bootstrap significance testing (replacing Wilcoxon — underpowered at 3 seeds)
+- Added warmup scheduler (5% linear warmup → cosine decay)
+- Scaled LR with batch size (1e-5→2e-5 pretrained, 1e-4→2e-4 new) per linear scaling rule
+- Added explainability: GradientSHAP (captum) + modality occlusion study alongside Grad-CAM++
+- Added Expected Calibration Error (ECE) as evaluation metric
+
+**Preprocessing run:**
+- Deleted tar archive (freed ~24 GB)
+- resample_and_preprocess.py: 20K sampled (balanced 4-class) + preprocessed
+- 20,000/20,000 processed, 0 failures, 4h37m on A6000
+- Audio shape: (1, 128, 101) — different from 5K due to parameter changes
+- Old 5K preprocessed data deleted (freed ~22.5 GB)
+- Verified: metadata CSV clean, all tensor files exist
+
+**Code file plan:**
+- `config.py` — central configuration (updated)
+- `dataset.py` — data loading (update paths)
+- `model.py` — architecture with configurable depth + fusion mode
+- `run_experiments.py` — training + ablation orchestration + test evaluation + explainability
+- `analysis.py` — all paper figures + bootstrap significance tests
+
 ---
 
 ## 13. References
@@ -490,3 +605,5 @@ ffmpeg (conda-forge — needed for audio extraction from mp4)
 - VGGish: Hershey et al., ICASSP 2017
 - Grad-CAM++: Chattopadhyay et al., WACV 2018
 - Cross-Modal Transformers: Tsai et al. (MulT), ACL 2019
+- GradientSHAP: Erion et al., NeurIPS 2021 (via captum library)
+- Linear LR Scaling: Goyal et al., 2017
