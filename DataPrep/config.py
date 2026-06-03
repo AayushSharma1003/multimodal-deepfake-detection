@@ -63,4 +63,8 @@ FUSION_MODES = [
 
 GRADCAM_SAMPLES = 8            # number of samples for Grad-CAM++ visualisation
 BOOTSTRAP_N = 10_000           # bootstrap resamples for significance test
+<<<<<<< Updated upstream
 BOOTSTRAP_CI = 0.95            # confidence interval
+=======
+BOOTSTRAP_CI = 0.95            # confidence interval
+>>>>>>> Stashed changes

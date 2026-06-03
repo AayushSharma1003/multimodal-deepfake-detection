@@ -606,4 +606,8 @@ captum (needed for GradientSHAP explainability — install before evaluation)
 - Grad-CAM++: Chattopadhyay et al., WACV 2018
 - Cross-Modal Transformers: Tsai et al. (MulT), ACL 2019
 - GradientSHAP: Erion et al., NeurIPS 2021 (via captum library)
+<<<<<<< Updated upstream
 - Linear LR Scaling: Goyal et al., 2017
+=======
+- Linear LR Scaling: Goyal et al., 2017
+>>>>>>> Stashed changes
