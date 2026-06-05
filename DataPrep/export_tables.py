@@ -37,8 +37,8 @@ def collect_depth_ablation():
                 print(f"  [MISSING] {p}")
                 continue
             m = load_metrics(p)
-            baccs.append(m.get("balanced_accuracy", m.get("test_balanced_accuracy", 0)))
-            aucs.append(m.get("auc_macro", m.get("test_auc", 0)))
+            baccs.append(m.get("bal_acc", m.get("balanced_accuracy", 0)))
+            aucs.append(m.get("auc", m.get("auc_macro", 0)))
             eces.append(m.get("ece", m.get("test_ece", 0)))
         if baccs:
             ba_m, ba_s = mean_std(baccs)
@@ -67,8 +67,8 @@ def collect_fusion_ablation():
                 print(f"  [MISSING] {p}")
                 continue
             m = load_metrics(p)
-            baccs.append(m.get("balanced_accuracy", m.get("test_balanced_accuracy", 0)))
-            aucs.append(m.get("auc_macro", m.get("test_auc", 0)))
+            baccs.append(m.get("bal_acc", m.get("balanced_accuracy", 0)))
+            aucs.append(m.get("auc", m.get("auc_macro", 0)))
             eces.append(m.get("ece", m.get("test_ece", 0)))
         if baccs:
             ba_m, ba_s = mean_std(baccs)
