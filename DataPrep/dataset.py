@@ -62,8 +62,4 @@ if __name__ == "__main__":
         batch = next(iter(loader))
         print(f"{split}: {len(loader.dataset)} samples | "
               f"video={batch['video'].shape} audio={batch['audio'].shape} "
-<<<<<<< Updated upstream
               f"label={batch['label'].shape}")
-=======
-              f"label={batch['label'].shape}")
->>>>>>> Stashed changes

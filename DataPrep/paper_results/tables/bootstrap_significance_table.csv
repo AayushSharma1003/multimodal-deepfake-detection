@@ -1,0 +1,7 @@
+Comparison,Delta (BAcc),p-value,95% CI,Significant
+depth_2_vs_1,-0.0293,1.0000,"[-0.0417, -0.0167]",No
+depth_3_vs_2,-0.0266,1.0000,"[-0.0395, -0.0134]",No
+depth_4_vs_3,-0.0987,1.0000,"[-0.1147, -0.0834]",No
+cross_modal_vs_concat,+0.0115,0.0247,"[0.0000, 0.0230]",No
+cross_modal_vs_video_only,+0.0251,0.0000,"[0.0130, 0.0372]",No
+cross_modal_vs_audio_only,+0.3896,0.0000,"[0.3734, 0.4060]",No

@@ -606,7 +606,7 @@ if __name__ == "__main__":
     print(f"Device: {DEVICE}")
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name()}")
-        print(f"VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
     if args.phase in ("depth", "all"):
         run_depth_ablation()
