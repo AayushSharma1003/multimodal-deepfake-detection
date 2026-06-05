@@ -1,30 +1,34 @@
 [
   {
-    "delta": -0.02925237182130147,
-    "p_value": 1.0,
-    "ci_lower": -0.04168373989155547,
-    "ci_upper": -0.016678395886662395,
-    "comparison": "depth_2_vs_1"
+    "delta": 0.02925237182130147,
+    "p_value": 0.0,
+    "ci_lower": 0.016678395886662388,
+    "ci_upper": 0.04168373989155547,
+    "significant": true,
+    "comparison": "depth_1_vs_2"
   },
   {
-    "delta": -0.026636769392870407,
-    "p_value": 1.0,
-    "ci_lower": -0.03952821383475099,
-    "ci_upper": -0.013431345031807774,
-    "comparison": "depth_3_vs_2"
+    "delta": 0.026636769392870407,
+    "p_value": 0.0,
+    "ci_lower": 0.013431345031807772,
+    "ci_upper": 0.03952821383475099,
+    "significant": true,
+    "comparison": "depth_2_vs_3"
   },
   {
-    "delta": -0.09866127621328835,
-    "p_value": 1.0,
-    "ci_lower": -0.11471340851868601,
-    "ci_upper": -0.08337715798496147,
-    "comparison": "depth_4_vs_3"
+    "delta": 0.09866127621328835,
+    "p_value": 0.0,
+    "ci_lower": 0.08337715798496147,
+    "ci_upper": 0.11471340851868601,
+    "significant": true,
+    "comparison": "depth_3_vs_4"
   },
   {
     "delta": 0.01147380143672716,
     "p_value": 0.0247,
     "ci_lower": 2.176365389380564e-05,
     "ci_upper": 0.023022140807396806,
+    "significant": true,
     "comparison": "cross_modal_vs_concat"
   },
   {
@@ -32,6 +36,7 @@
     "p_value": 0.0,
     "ci_lower": 0.013018219620491189,
     "ci_upper": 0.03718044080910147,
+    "significant": true,
     "comparison": "cross_modal_vs_video_only"
   },
   {
@@ -39,6 +44,7 @@
     "p_value": 0.0,
     "ci_lower": 0.37342313081034895,
     "ci_upper": 0.40603157754230657,
+    "significant": true,
     "comparison": "cross_modal_vs_audio_only"
   }
 ]

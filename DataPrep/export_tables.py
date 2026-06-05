@@ -9,8 +9,8 @@ import os
 import csv
 import numpy as np
 
-RESULTS_ROOT = r"C:\Users\Komal-Sch\Desktop\LAV-DF-preprocessed-20k\results"
-OUTPUT_DIR = r"C:\Users\Komal-Sch\Desktop\LAV-DF-preprocessed-20k\results\tables"
+RESULTS_ROOT = r"C:\Users\Komal-Sch\Desktop\deepfake_detection\DataPrep\paper_results"
+OUTPUT_DIR = r"C:\Users\Komal-Sch\Desktop\deepfake_detection\DataPrep\paper_results\tables"
 SEEDS = [7, 42, 123]
 
 
@@ -88,6 +88,16 @@ def collect_fusion_ablation():
     return rows
 
 
+def _is_significant(entry, p_val, alpha=0.05):
+    """
+    Prefer an explicit 'significant' field from analysis.py if present;
+    otherwise derive significance from the p-value at alpha=0.05.
+    """
+    if "significant" in entry:
+        return bool(entry["significant"])
+    return p_val < alpha
+
+
 def load_bootstrap():
     p = os.path.join(RESULTS_ROOT, "bootstrap_significance.json")
     if not os.path.exists(p):
@@ -99,12 +109,15 @@ def load_bootstrap():
     # Handle both possible formats (list of dicts or dict of dicts)
     if isinstance(data, list):
         for entry in data:
+            p_val = entry.get("p_value", entry.get("p", 1.0))
+            ci_lo = entry.get("ci_lower", entry.get("ci", [0, 0])[0])
+            ci_hi = entry.get("ci_upper", entry.get("ci", [0, 0])[1])
             rows.append({
                 "Comparison": entry.get("comparison", entry.get("name", "")),
                 "Delta (BAcc)": f"{entry.get('delta', entry.get('delta_bacc', 0)):+.4f}",
-                "p-value": f"{entry.get('p_value', entry.get('p', 0)):.4f}",
-                "95% CI": f"[{entry.get('ci_lower', entry.get('ci', [0,0])[0]):.4f}, {entry.get('ci_upper', entry.get('ci', [0,0])[1]):.4f}]",
-                "Significant": "Yes" if entry.get("significant", False) else "No",
+                "p-value": f"{p_val:.4f}",
+                "95% CI": f"[{ci_lo:.4f}, {ci_hi:.4f}]",
+                "Significant": "Yes" if _is_significant(entry, p_val) else "No",
             })
     elif isinstance(data, dict):
         for key, entry in data.items():
@@ -115,12 +128,13 @@ def load_bootstrap():
                 else:
                     ci_lo = entry.get("ci_lower", 0)
                     ci_hi = entry.get("ci_upper", 0)
+                p_val = entry.get("p_value", entry.get("p", 1.0))
                 rows.append({
                     "Comparison": key,
                     "Delta (BAcc)": f"{entry.get('delta', entry.get('delta_bacc', 0)):+.4f}",
-                    "p-value": f"{entry.get('p_value', entry.get('p', 0)):.4f}",
+                    "p-value": f"{p_val:.4f}",
                     "95% CI": f"[{ci_lo:.4f}, {ci_hi:.4f}]",
-                    "Significant": "Yes" if entry.get("significant", False) else "No",
+                    "Significant": "Yes" if _is_significant(entry, p_val) else "No",
                 })
     return rows
 
@@ -138,10 +152,8 @@ def save_markdown(rows, columns, filepath, title):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(f"# {title}\n\n")
-        # Header
         f.write("| " + " | ".join(columns) + " |\n")
         f.write("| " + " | ".join(["---"] * len(columns)) + " |\n")
-        # Rows
         for row in rows:
             vals = [str(row.get(c, "")) for c in columns]
             f.write("| " + " | ".join(vals) + " |\n")
@@ -187,7 +199,6 @@ def main():
         f.write("**Ensemble BAcc:** 0.7096 | **Ensemble AUC:** 0.9035\n\n")
         f.write("---\n\n")
 
-        # Depth table
         f.write("## Table 1: Depth Ablation (fusion_mode = cross_modal)\n\n")
         f.write("| " + " | ".join(cols) + " |\n")
         f.write("| " + " | ".join(["---"] * len(cols)) + " |\n")
@@ -196,7 +207,6 @@ def main():
             f.write("| " + " | ".join(vals) + " |\n")
         f.write("\n")
 
-        # Fusion table
         f.write("## Table 2: Fusion Ablation (depth = 1 layer)\n\n")
         f.write("| " + " | ".join(cols) + " |\n")
         f.write("| " + " | ".join(["---"] * len(cols)) + " |\n")
@@ -205,7 +215,6 @@ def main():
             f.write("| " + " | ".join(vals) + " |\n")
         f.write("\n")
 
-        # Bootstrap table
         if boot_rows:
             f.write("## Table 3: Bootstrap Significance Tests\n\n")
             f.write("Paired bootstrap (N=10,000) on majority-voted ensemble predictions.\n\n")

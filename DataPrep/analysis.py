@@ -10,8 +10,6 @@ Methodology:
   - Confusion matrix + bootstrap: majority vote across 3 seeds
     (ties broken by probability averaging)
   - Paired bootstrap: N=10,000 on majority-voted ensemble predictions
-
-Reads saved results from run_experiments.py. No GPU needed.
 """
 
 import os, json, argparse
@@ -75,18 +73,13 @@ def majority_vote_ensemble(seed_data):
     """
     Combine predictions across seeds using majority vote.
     Ties broken by averaging probabilities and taking argmax.
-
-    Args:
-        seed_data: dict of {seed: {"preds": {"preds": array, "labels": array, "probs": array}}}
-    Returns:
-        ensemble_preds, labels, ensemble_probs
     """
     seeds_with_preds = [sd for sd in seed_data.values() if sd["preds"] is not None]
     if not seeds_with_preds:
         return None, None, None
 
-    all_preds = np.stack([sd["preds"]["preds"] for sd in seeds_with_preds], axis=0)  # (n_seeds, n_samples)
-    all_probs = np.stack([sd["preds"]["probs"] for sd in seeds_with_preds], axis=0)  # (n_seeds, n_samples, n_classes)
+    all_preds = np.stack([sd["preds"]["preds"] for sd in seeds_with_preds], axis=0)
+    all_probs = np.stack([sd["preds"]["probs"] for sd in seeds_with_preds], axis=0)
     labels = seeds_with_preds[0]["preds"]["labels"]
     n_seeds, n_samples = all_preds.shape
 
@@ -98,14 +91,11 @@ def majority_vote_ensemble(seed_data):
         winners = classes[counts == max_count]
 
         if len(winners) == 1:
-            # Clear majority
             ensemble_preds[i] = winners[0]
         else:
-            # Tie: break by averaging probabilities
             avg_probs = all_probs[:, i, :].mean(axis=0)
             ensemble_preds[i] = avg_probs.argmax()
 
-    # Ensemble probs = averaged across seeds (for AUC computation)
     ensemble_probs = all_probs.mean(axis=0)
 
     return ensemble_preds, labels, ensemble_probs
@@ -327,9 +317,9 @@ def paired_bootstrap_test(preds_a, labels_a, preds_b, labels_b,
                           metric_fn=balanced_accuracy_score, n_boot=BOOTSTRAP_N):
     """
     Paired bootstrap test on majority-voted ensemble predictions.
-    Tests whether model A is significantly better than model B.
+    Tests whether model A is significantly better than model B (one-sided).
 
-    Returns: dict with delta, p_value, ci_lower, ci_upper
+    Returns: dict with delta, p_value, ci_lower, ci_upper, significant
     """
     n = len(preds_a)
     observed_delta = metric_fn(labels_a, preds_a) - metric_fn(labels_b, preds_b)
@@ -342,13 +332,14 @@ def paired_bootstrap_test(preds_a, labels_a, preds_b, labels_b,
         score_b = metric_fn(labels_b[idx], preds_b[idx])
         deltas[i] = score_a - score_b
 
-    p_value = np.mean(deltas <= 0)
+    p_value = float(np.mean(deltas <= 0))
     alpha = 1 - BOOTSTRAP_CI
-    ci_lo = np.percentile(deltas, 100 * alpha / 2)
-    ci_hi = np.percentile(deltas, 100 * (1 - alpha / 2))
+    ci_lo = float(np.percentile(deltas, 100 * alpha / 2))
+    ci_hi = float(np.percentile(deltas, 100 * (1 - alpha / 2)))
 
-    return {"delta": float(observed_delta), "p_value": float(p_value),
-            "ci_lower": float(ci_lo), "ci_upper": float(ci_hi)}
+    return {"delta": float(observed_delta), "p_value": p_value,
+            "ci_lower": ci_lo, "ci_upper": ci_hi,
+            "significant": bool(p_value < 0.05)}
 
 
 def run_significance_tests(depth_results, fusion_results, save_path):
@@ -366,8 +357,9 @@ def run_significance_tests(depth_results, fusion_results, save_path):
             if preds is not None:
                 depth_ensembles[depth] = {"preds": preds, "labels": labels, "probs": probs}
 
+    # Test "shallower > deeper" so positive deltas mean shallower is better.
     for i in range(len(DEPTH_ABLATION) - 1):
-        d_a, d_b = DEPTH_ABLATION[i + 1], DEPTH_ABLATION[i]
+        d_a, d_b = DEPTH_ABLATION[i], DEPTH_ABLATION[i + 1]   # A=shallower, B=deeper
         if d_a not in depth_ensembles or d_b not in depth_ensembles:
             continue
         result = paired_bootstrap_test(
@@ -376,8 +368,8 @@ def run_significance_tests(depth_results, fusion_results, save_path):
         )
         result["comparison"] = f"depth_{d_a}_vs_{d_b}"
         tests.append(result)
-        sig = "✓ YES" if result["p_value"] < 0.05 else "✗ no"
-        print(f"    {d_a} layers vs {d_b} layers: "
+        sig = "✓ YES" if result["significant"] else "✗ no"
+        print(f"    {d_a} layer{'s' if d_a>1 else ''} vs {d_b} layers: "
               f"Δ={result['delta']:+.4f}  p={result['p_value']:.4f}  "
               f"CI=[{result['ci_lower']:.4f}, {result['ci_upper']:.4f}]  sig={sig}")
 
@@ -389,7 +381,6 @@ def run_significance_tests(depth_results, fusion_results, save_path):
             if preds is not None:
                 fusion_ensembles[mode] = {"preds": preds, "labels": labels, "probs": probs}
 
-    # Compare cross_modal vs each other mode
     if "cross_modal" in fusion_ensembles:
         for mode in ["concat", "video_only", "audio_only"]:
             if mode not in fusion_ensembles:
@@ -402,7 +393,7 @@ def run_significance_tests(depth_results, fusion_results, save_path):
             )
             result["comparison"] = f"cross_modal_vs_{mode}"
             tests.append(result)
-            sig = "✓ YES" if result["p_value"] < 0.05 else "✗ no"
+            sig = "✓ YES" if result["significant"] else "✗ no"
             print(f"    cross_modal vs {mode}: "
                   f"Δ={result['delta']:+.4f}  p={result['p_value']:.4f}  "
                   f"CI=[{result['ci_lower']:.4f}, {result['ci_upper']:.4f}]  sig={sig}")
@@ -436,7 +427,6 @@ def print_results_table(results, config_labels, title):
               f"{np.mean(aucs):.4f}±{np.std(aucs):.4f} "
               f"{np.mean(eces):.4f}")
 
-    # Also print majority vote ensemble results
     print(f"\n  Majority vote ensemble:")
     for cfg, label in config_labels.items():
         seed_data = results.get(cfg, {})
@@ -476,13 +466,11 @@ def main():
     depth_labels = {d: f"{d} layer{'s' if d > 1 else ''}" for d in DEPTH_ABLATION}
     fusion_labels = {m: m.replace("_", " ").title() for m in FUSION_MODES}
 
-    # Print tables
     if depth_results:
         print_results_table(depth_results, depth_labels, "DEPTH ABLATION RESULTS")
     if fusion_results:
         print_results_table(fusion_results, fusion_labels, "FUSION ABLATION RESULTS")
 
-    # Generate plots
     print("[analysis] Generating plots...")
     if depth_results:
         plot_training_curves(depth_results, os.path.join(PLOTS_DIR, "F2_training_curves.png"))
@@ -500,7 +488,6 @@ def main():
 
     plot_modality_occlusion(os.path.join(PLOTS_DIR, "F7_modality_occlusion.png"))
 
-    # Bootstrap significance
     if not args.skip_boot and (depth_results or fusion_results):
         print("\n[analysis] Running paired bootstrap significance tests (majority vote ensemble)...")
         run_significance_tests(depth_results, fusion_results,
